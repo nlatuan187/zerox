@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
@@ -15,6 +15,8 @@ from typing import List
 from PIL import Image
 import io
 from fastapi.middleware.gzip import GZipMiddleware
+import uuid
+from sse_starlette.sse import EventSourceResponse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +40,10 @@ app.add_middleware(
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-async def process_image_with_model(image_path: str) -> str:
+# Store active analysis jobs
+active_jobs = {}
+
+async def process_image_with_model(image_path: str, job_id: str) -> str:
     """Process a single image using litellmmodel directly"""
     try:
         model = litellmmodel(model="gpt-4o-mini")
@@ -53,10 +58,14 @@ async def process_image_with_model(image_path: str) -> str:
         logger.error(f"Error processing image with model: {str(e)}")
         return ""
 
-async def analyze_content(contract_text: str, anthropic_key: str):
+async def analyze_content(contract_text: str, anthropic_key: str, job_id: str):
     """Analyze contract content and return results"""
     try:
         client = Anthropic(api_key=anthropic_key)
+        
+        # Update job status
+        active_jobs[job_id]["status"] = "validating"
+        active_jobs[job_id]["progress"] = 10
         
         # First, validate if this is an insurance contract
         logger.info("Validating document type...")
@@ -82,7 +91,7 @@ async def analyze_content(contract_text: str, anthropic_key: str):
         is_insurance_contract = "YES" in validation_text and "NO" not in validation_text
 
         if not is_insurance_contract:
-            return {
+            result = {
                 "ocr_text": contract_text,
                 "message": "Tài liệu không phải là hợp đồng bảo hiểm. Vui lòng tải lên hợp đồng bảo hiểm để phân tích.",
                 "quyền_lợi": "Không phải hợp đồng bảo hiểm",
@@ -91,6 +100,10 @@ async def analyze_content(contract_text: str, anthropic_key: str):
                 "các_điều_khoản_loại_trừ": "Không phải hợp đồng bảo hiểm",
                 "quy_trình_claim": "Không phải hợp đồng bảo hiểm"
             }
+            active_jobs[job_id]["status"] = "completed"
+            active_jobs[job_id]["result"] = result
+            active_jobs[job_id]["progress"] = 100
+            return result
 
         # Initialize conversation and analysis
         messages = [{"role": "user", "content": f"Tôi sẽ gửi cho bạn một hợp đồng bảo hiểm để phân tích từng phần. Đây là nội dung hợp đồng:\n\n{contract_text}"}]
@@ -105,7 +118,10 @@ async def analyze_content(contract_text: str, anthropic_key: str):
             ("quy_trình_claim", "Cuối cùng, hãy phân tích Quy trình claim. Mô tả các bước thực hiện, hồ sơ yêu cầu, thời hạn nộp hồ sơ.")
         ]
 
-        for section_key, prompt in sections:
+        for i, (section_key, prompt) in enumerate(sections):
+            active_jobs[job_id]["status"] = f"analyzing_{section_key}"
+            active_jobs[job_id]["progress"] = 20 + (i * 16)  # Progress from 20% to 100%
+            
             messages.append({"role": "user", "content": prompt})
             response = client.messages.create(
                 model="claude-3-5-sonnet-20241022",
@@ -117,20 +133,25 @@ async def analyze_content(contract_text: str, anthropic_key: str):
             analysis[section_key] = response.content[0].text.strip()
             messages.append({"role": "assistant", "content": response.content[0].text})
 
-        return {
+        result = {
             "ocr_text": contract_text,
             **analysis
         }
+        
+        active_jobs[job_id]["status"] = "completed"
+        active_jobs[job_id]["result"] = result
+        active_jobs[job_id]["progress"] = 100
+        
+        return result
 
     except Exception as e:
         logger.error(f"Error in analyze_content: {str(e)}")
+        active_jobs[job_id]["status"] = "error"
+        active_jobs[job_id]["error"] = str(e)
         raise
 
-@app.post("/analyze")
-async def analyze_contract(
-    file: UploadFile = File(None),
-    images: List[UploadFile] = File([])
-):
+async def process_files(job_id: str, file: UploadFile = None, images: List[UploadFile] = []):
+    """Process files and update job status"""
     try:
         # Check API keys
         openai_key = os.getenv("OPENAI_API_KEY")
@@ -146,6 +167,9 @@ async def analyze_contract(
             contents = []
             
             if file and file.filename.lower().endswith('.pdf'):
+                active_jobs[job_id]["status"] = "processing_pdf"
+                active_jobs[job_id]["progress"] = 5
+                
                 # Process PDF file using zerox
                 file_path = os.path.join(temp_dir, file.filename)
                 content = await file.read()
@@ -158,14 +182,18 @@ async def analyze_contract(
                     raise HTTPException(status_code=400, detail="Không thể xử lý file PDF. Vui lòng kiểm tra lại file đầu vào.")
             elif images:
                 # Process all images
+                total_images = len(images)
                 for i, img in enumerate(images):
                     try:
+                        active_jobs[job_id]["status"] = f"processing_image_{i+1}/{total_images}"
+                        active_jobs[job_id]["progress"] = int((i / total_images) * 15)  # Progress up to 15%
+                        
                         file_path = os.path.join(temp_dir, f"page_{i}{os.path.splitext(img.filename)[1]}")
                         content = await img.read()
                         with open(file_path, "wb") as f:
                             f.write(content)
                         
-                        result = await process_image_with_model(file_path)
+                        result = await process_image_with_model(file_path, job_id)
                         if result:
                             contents.append(result)
                             logger.info(f"Successfully processed image {i}")
@@ -185,21 +213,74 @@ async def analyze_contract(
             logger.info(f"Extracted text length: {len(contract_text)} characters")
 
             # Analyze content
-            result = await analyze_content(contract_text, anthropic_key)
-            
-            # Return response with compression
-            return JSONResponse(
-                content=result,
-                headers={
-                    "Content-Encoding": "gzip",
-                    "Vary": "Accept-Encoding",
-                    "Cache-Control": "no-cache"
-                }
-            )
+            await analyze_content(contract_text, anthropic_key, job_id)
 
     except Exception as e:
-        logger.error(f"Error in analyze_contract: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in process_files: {str(e)}")
+        active_jobs[job_id]["status"] = "error"
+        active_jobs[job_id]["error"] = str(e)
+        raise
+
+@app.post("/analyze")
+async def analyze_contract(
+    file: UploadFile = File(None),
+    images: List[UploadFile] = File([])
+):
+    """Start analysis and return job ID"""
+    job_id = str(uuid.uuid4())
+    active_jobs[job_id] = {
+        "status": "starting",
+        "progress": 0,
+        "result": None,
+        "error": None
+    }
+    
+    # Start processing in background
+    asyncio.create_task(process_files(job_id, file, images))
+    
+    return {"job_id": job_id}
+
+@app.get("/status/{job_id}")
+async def job_status(job_id: str):
+    """Get job status"""
+    if job_id not in active_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = active_jobs[job_id]
+    return job
+
+async def status_event_generator(request: Request, job_id: str):
+    """Generate SSE events for job status"""
+    while True:
+        if await request.is_disconnected():
+            break
+
+        if job_id not in active_jobs:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": "Job not found"})
+            }
+            break
+
+        job = active_jobs[job_id]
+        yield {
+            "event": "status",
+            "data": json.dumps(job)
+        }
+
+        if job["status"] in ["completed", "error"]:
+            if job["status"] == "completed":
+                # Clean up job data after completion
+                del active_jobs[job_id]
+            break
+
+        await asyncio.sleep(1)
+
+@app.get("/stream/{job_id}")
+async def stream_status(request: Request, job_id: str):
+    """Stream job status updates"""
+    event_generator = status_event_generator(request, job_id)
+    return EventSourceResponse(event_generator)
 
 # Serve index.html at root
 @app.get("/")

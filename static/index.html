@@ -15,6 +15,28 @@
             -ms-user-select: none;
             user-select: none;
         }
+
+        /* Progress bar styles */
+        .progress-container {
+            width: 100%;
+            background-color: #f0f0f0;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            margin: 1rem 0;
+        }
+
+        .progress-bar {
+            height: 0.5rem;
+            background-color: #2563eb;
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            text-align: center;
+            color: #4b5563;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -85,6 +107,15 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Progress Section -->
+        <div id="progress" class="max-w-2xl mx-auto bg-white rounded-lg shadow-md p-6 mb-8 hidden">
+            <h3 class="text-lg font-medium text-gray-800 mb-4">Tiến độ phân tích</h3>
+            <div class="progress-container">
+                <div id="progressBar" class="progress-bar" style="width: 0%"></div>
+            </div>
+            <p id="progressText" class="progress-text">Đang bắt đầu phân tích...</p>
         </div>
 
         <!-- Loading Indicator -->

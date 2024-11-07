@@ -1,12 +1,9 @@
 export async function analyzeContract(formData) {
     try {
+        // Start analysis and get job ID
         const response = await fetch('/analyze', {
             method: 'POST',
-            body: formData,
-            headers: {
-                'Accept-Encoding': 'gzip, deflate',
-                'Cache-Control': 'no-cache'
-            }
+            body: formData
         });
 
         if (!response.ok) {
@@ -20,27 +17,63 @@ export async function analyzeContract(formData) {
             throw new Error(errorMessage);
         }
 
-        // Handle large responses
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let result = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            result += decoder.decode(value, { stream: true });
-        }
-
-        // Parse the complete response
-        try {
-            return JSON.parse(result);
-        } catch (e) {
-            console.error('Error parsing response:', e);
-            throw new Error('Lỗi khi xử lý kết quả phân tích');
-        }
+        const { job_id } = await response.json();
+        
+        // Connect to SSE stream
+        return new Promise((resolve, reject) => {
+            const eventSource = new EventSource(`/stream/${job_id}`);
+            
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateProgress(data);
+                
+                if (data.status === 'completed') {
+                    eventSource.close();
+                    resolve(data.result);
+                } else if (data.status === 'error') {
+                    eventSource.close();
+                    reject(new Error(data.error || 'Lỗi khi phân tích file'));
+                }
+            };
+            
+            eventSource.onerror = (error) => {
+                eventSource.close();
+                reject(new Error('Mất kết nối với máy chủ'));
+            };
+        });
     } catch (error) {
         console.error('API Error:', error);
         throw new Error(error.message || 'Lỗi khi phân tích file');
+    }
+}
+
+function updateProgress(data) {
+    const progressBar = document.getElementById('progressBar');
+    const progressText = document.getElementById('progressText');
+    
+    if (progressBar && progressText) {
+        progressBar.style.width = `${data.progress}%`;
+        
+        let statusText = 'Đang xử lý...';
+        if (data.status.startsWith('processing_image')) {
+            statusText = `Đang xử lý ảnh ${data.status.split('_')[2]}`;
+        } else if (data.status === 'processing_pdf') {
+            statusText = 'Đang xử lý PDF...';
+        } else if (data.status === 'validating') {
+            statusText = 'Đang kiểm tra tài liệu...';
+        } else if (data.status.startsWith('analyzing')) {
+            const section = data.status.split('_')[1];
+            const sections = {
+                'quyền_lợi': 'quyền lợi bảo hiểm',
+                'chi_phí_tổng_thể_hàng_năm': 'chi phí',
+                'giá_trị_hoàn_lại': 'giá trị hoàn lại',
+                'các_điều_khoản_loại_trừ': 'điều khoản loại trừ',
+                'quy_trình_claim': 'quy trình claim'
+            };
+            statusText = `Đang phân tích ${sections[section] || section}...`;
+        }
+        
+        progressText.textContent = statusText;
     }
 }
 
@@ -68,17 +101,20 @@ export function showLoading() {
     const loading = document.getElementById('loading');
     const results = document.getElementById('results');
     const error = document.getElementById('error');
+    const progress = document.getElementById('progress');
     
     if (loading) loading.classList.add('active');
     if (results) results.classList.add('hidden');
     if (error) error.classList.add('hidden');
+    if (progress) progress.classList.remove('hidden');
 }
 
 export function hideLoading() {
     const loading = document.getElementById('loading');
-    if (loading) {
-        loading.classList.remove('active');
-    }
+    const progress = document.getElementById('progress');
+    
+    if (loading) loading.classList.remove('active');
+    if (progress) progress.classList.add('hidden');
 }
 
 export function showResults() {
