@@ -41,6 +41,7 @@ class litellmmodel(BaseModel):
 
         ## calling custom methods to validate the environment
         self.validate_environment()
+        self.validate_model()
         self.validate_access()
 
     @property
@@ -73,6 +74,21 @@ class litellmmodel(BaseModel):
             raise MissingEnvironmentVariables(extra_info={
                 "keys_in_environment": False,
                 "missing_keys": missing_keys
+            })
+        
+    def validate_model(self) -> None:
+        """Validates that the model is supported."""
+        supported_models = [
+            "gpt-4o-mini",
+            "gpt-4o-mini-2024-07-18",
+            "gpt-4o",
+            "gpt-4o-2024-08-06",
+            "gpt-4o-2024-05-13"
+        ]
+        if self.model not in supported_models:
+            raise NotAVisionModel(extra_info={
+                "model": self.model,
+                "supported_models": supported_models
             })
         
     def validate_access(self) -> None:
