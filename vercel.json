@@ -6,7 +6,8 @@
             "use": "@vercel/python",
             "config": {
                 "runtime": "python3.12",
-                "maxDuration": 60
+                "maxDuration": 60,
+                "buildCommand": "bash build.sh"
             }
         }
     ],
