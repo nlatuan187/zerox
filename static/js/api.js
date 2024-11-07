@@ -1,4 +1,6 @@
 export async function analyzeContract(formData) {
+    let eventSource = null;
+
     try {
         // Start analysis and get job ID
         const response = await fetch('/analyze', {
@@ -19,52 +21,91 @@ export async function analyzeContract(formData) {
 
         const { job_id } = await response.json();
         
-        // Connect to SSE stream
+        // Show initial progress
+        showProgress();
+        
+        // Connect to SSE stream with retry logic
         return new Promise((resolve, reject) => {
-            const eventSource = new EventSource(`/stream/${job_id}`);
             let retryCount = 0;
-            const maxRetries = 3;
+            const maxRetries = 5;
+            const retryDelay = 1000; // Start with 1 second
             
-            eventSource.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                updateProgress(data);
-                
-                // Show partial results if available
-                if (data.partial_result) {
-                    updateResults(data.partial_result, true);
-                }
-                
-                if (data.status === 'completed') {
+            function connectSSE() {
+                if (eventSource) {
                     eventSource.close();
-                    resolve(data.result);
-                } else if (data.status === 'error') {
-                    eventSource.close();
-                    reject(new Error(data.error || 'Lỗi khi phân tích file'));
                 }
-            };
-            
-            eventSource.onerror = async (error) => {
-                console.error('SSE Error:', error);
-                eventSource.close();
-                
-                // Retry logic for connection errors
-                if (retryCount < maxRetries) {
-                    retryCount++;
-                    console.log(`Retrying connection (${retryCount}/${maxRetries})...`);
-                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-                    eventSource = new EventSource(`/stream/${job_id}`);
-                } else {
-                    reject(new Error('Mất kết nối với máy chủ sau nhiều lần thử lại'));
-                }
-            };
 
-            // Handle browser closing/navigating away
+                eventSource = new EventSource(`/stream/${job_id}`);
+                console.log('Connecting to SSE stream...');
+
+                eventSource.onopen = () => {
+                    console.log('SSE connection opened');
+                    retryCount = 0; // Reset retry count on successful connection
+                };
+
+                eventSource.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('Received SSE data:', data);
+                        
+                        updateProgress(data);
+                        
+                        if (data.partial_result) {
+                            showResults();
+                            updateResults(data.partial_result, true);
+                        }
+                        
+                        if (data.status === 'completed' && data.result) {
+                            console.log('Analysis completed');
+                            eventSource.close();
+                            hideProgress();
+                            resolve(data.result);
+                        } else if (data.status === 'error') {
+                            console.error('Analysis error:', data.error);
+                            eventSource.close();
+                            hideProgress();
+                            reject(new Error(data.error || 'Lỗi khi phân tích file'));
+                        }
+                    } catch (error) {
+                        console.error('Error processing SSE message:', error);
+                    }
+                };
+
+                eventSource.onerror = async (error) => {
+                    console.error('SSE connection error:', error);
+                    eventSource.close();
+                    
+                    if (retryCount < maxRetries) {
+                        retryCount++;
+                        const currentDelay = retryDelay * Math.pow(2, retryCount - 1); // Exponential backoff
+                        console.log(`Retrying connection in ${currentDelay}ms (${retryCount}/${maxRetries})...`);
+                        
+                        // Update UI to show retry status
+                        updateRetryStatus(retryCount, maxRetries);
+                        
+                        setTimeout(connectSSE, currentDelay);
+                    } else {
+                        console.error('Max retries reached');
+                        hideProgress();
+                        reject(new Error('Không thể kết nối với máy chủ sau nhiều lần thử lại'));
+                    }
+                };
+            }
+
+            // Start initial connection
+            connectSSE();
+
+            // Cleanup on page unload
             window.addEventListener('beforeunload', () => {
-                eventSource.close();
+                if (eventSource) {
+                    console.log('Closing SSE connection on page unload');
+                    eventSource.close();
+                }
             });
         });
     } catch (error) {
         console.error('API Error:', error);
+        hideProgress();
         throw new Error(error.message || 'Lỗi khi phân tích file');
     }
 }
@@ -72,9 +113,6 @@ export async function analyzeContract(formData) {
 function updateProgress(data) {
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
-    const progress = document.getElementById('progress');
-    
-    if (progress) progress.classList.remove('hidden');
     
     if (progressBar && progressText) {
         progressBar.style.width = `${data.progress}%`;
@@ -103,6 +141,27 @@ function updateProgress(data) {
     }
 }
 
+function updateRetryStatus(retryCount, maxRetries) {
+    const progressText = document.getElementById('progressText');
+    if (progressText) {
+        progressText.textContent = `Đang kết nối lại... (${retryCount}/${maxRetries})`;
+    }
+}
+
+function showProgress() {
+    const progress = document.getElementById('progress');
+    if (progress) {
+        progress.classList.remove('hidden');
+    }
+}
+
+function hideProgress() {
+    const progress = document.getElementById('progress');
+    if (progress) {
+        progress.classList.add('hidden');
+    }
+}
+
 export function showError(message) {
     const errorDiv = document.getElementById('error');
     if (!errorDiv) {
@@ -127,27 +186,25 @@ export function showLoading() {
     const loading = document.getElementById('loading');
     const results = document.getElementById('results');
     const error = document.getElementById('error');
-    const progress = document.getElementById('progress');
     
     if (loading) loading.classList.add('active');
     if (results) results.classList.add('hidden');
     if (error) error.classList.add('hidden');
-    if (progress) progress.classList.remove('hidden');
+    showProgress();
 }
 
 export function hideLoading() {
     const loading = document.getElementById('loading');
-    const progress = document.getElementById('progress');
-    
-    if (loading) loading.classList.remove('active');
-    if (progress) progress.classList.add('hidden');
+    if (loading) {
+        loading.classList.remove('active');
+    }
+    hideProgress();
 }
 
 export function showResults() {
     const results = document.getElementById('results');
     if (results) {
         results.classList.remove('hidden');
-        results.scrollIntoView({ behavior: 'smooth' });
     }
 }
 
@@ -161,19 +218,24 @@ export function updateResults(data, isPartial = false) {
             'claim': data.quy_trình_claim
         };
 
+        let hasContent = false;
         for (const [id, content] of Object.entries(elements)) {
-            if (!content && isPartial) continue; // Skip empty sections for partial updates
+            if (!content && isPartial) continue;
             
             const element = document.getElementById(id);
             if (element) {
-                element.innerHTML = content || 'Đang phân tích...';
-                
-                // Show results container when we start getting data
-                const results = document.getElementById('results');
-                if (results) results.classList.remove('hidden');
-            } else {
-                console.warn(`Element with id '${id}' not found`);
+                if (content) {
+                    element.innerHTML = content;
+                    hasContent = true;
+                } else if (!isPartial) {
+                    element.innerHTML = 'Đang phân tích...';
+                }
             }
+        }
+
+        // Only show results if we have content
+        if (hasContent) {
+            showResults();
         }
     } catch (error) {
         console.error('Error updating results:', error);
