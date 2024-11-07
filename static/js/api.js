@@ -1,6 +1,8 @@
 export async function analyzeContract(formData) {
     try {
-        // Start analysis and get job ID
+        showLoading();
+        hideError();
+
         const response = await fetch('/analyze', {
             method: 'POST',
             body: formData
@@ -17,82 +19,75 @@ export async function analyzeContract(formData) {
             throw new Error(errorMessage);
         }
 
-        const { job_id } = await response.json();
-        
-        // Show initial progress
-        showProgress();
-        
-        // Poll for status with exponential backoff
-        return await pollStatus(job_id);
-    } catch (error) {
-        console.error('API Error:', error);
-        hideProgress();
-        throw new Error(error.message || 'Lỗi khi phân tích file');
-    }
-}
+        // Handle streaming response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-async function pollStatus(jobId) {
-    const maxAttempts = 60; // 5 minutes total with increasing delays
-    let attempt = 0;
-    let delay = 1000; // Start with 1 second
-
-    while (attempt < maxAttempts) {
-        try {
-            console.log(`Polling attempt ${attempt + 1}/${maxAttempts}`);
-            const response = await fetch(`/status/${jobId}`);
+        while (true) {
+            const { done, value } = await reader.read();
             
-            if (!response.ok) {
-                throw new Error('Failed to fetch status');
+            if (done) {
+                console.log('Stream complete');
+                break;
             }
 
-            const data = await response.json();
-            console.log('Status data:', data);
+            // Decode chunk and add to buffer
+            buffer += decoder.decode(value, { stream: true });
 
-            // Update UI with current progress
-            updateProgress(data);
+            // Process complete events in buffer
+            const events = buffer.split('\n\n');
+            buffer = events.pop() || ''; // Keep incomplete event in buffer
 
-            // Show partial results if available
-            if (data.partial_result) {
-                showResults();
-                updateResults(data.partial_result, true);
-            }
+            for (const event of events) {
+                if (!event.trim()) continue;
 
-            // Check status
-            if (data.status === 'completed' && data.result) {
-                console.log('Analysis completed');
-                hideProgress();
-                return data.result;
-            } else if (data.status === 'error') {
-                console.error('Analysis error:', data.error);
-                hideProgress();
-                throw new Error(data.error || 'Lỗi khi phân tích file');
-            }
+                try {
+                    // Parse event data
+                    const dataMatch = event.match(/^data: (.+)$/m);
+                    if (!dataMatch) continue;
 
-            // Calculate next delay with exponential backoff
-            delay = Math.min(delay * 1.5, 10000); // Cap at 10 seconds
-            console.log(`Waiting ${delay}ms before next poll`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-            attempt++;
-        } catch (error) {
-            console.error('Polling error:', error);
-            // Only retry on network errors
-            if (error.message === 'Failed to fetch status') {
-                delay = Math.min(delay * 2, 10000);
-                console.log(`Retrying in ${delay}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                attempt++;
-            } else {
-                throw error;
+                    const data = JSON.parse(dataMatch[1]);
+                    console.log('Received event:', data);
+
+                    // Update progress
+                    updateProgress(data);
+
+                    // Handle partial results
+                    if (data.status === 'partial_result' && data.result) {
+                        showResults();
+                        updateResults(data.result, true);
+                    }
+
+                    // Handle completion
+                    if (data.status === 'completed' && data.result) {
+                        hideLoading();
+                        return data.result;
+                    }
+
+                    // Handle errors
+                    if (data.status === 'error') {
+                        throw new Error(data.error || 'Lỗi khi phân tích file');
+                    }
+                } catch (error) {
+                    console.error('Error processing event:', error);
+                    throw error;
+                }
             }
         }
+    } catch (error) {
+        console.error('API Error:', error);
+        hideLoading();
+        throw new Error(error.message || 'Lỗi khi phân tích file');
     }
-
-    throw new Error('Quá thời gian chờ phân tích. Vui lòng thử lại.');
 }
 
 function updateProgress(data) {
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
+    const progress = document.getElementById('progress');
+    
+    if (progress) progress.classList.remove('hidden');
     
     if (progressBar && progressText) {
         progressBar.style.width = `${data.progress}%`;
@@ -121,20 +116,6 @@ function updateProgress(data) {
     }
 }
 
-function showProgress() {
-    const progress = document.getElementById('progress');
-    if (progress) {
-        progress.classList.remove('hidden');
-    }
-}
-
-function hideProgress() {
-    const progress = document.getElementById('progress');
-    if (progress) {
-        progress.classList.add('hidden');
-    }
-}
-
 export function showError(message) {
     const errorDiv = document.getElementById('error');
     if (!errorDiv) {
@@ -159,19 +140,20 @@ export function showLoading() {
     const loading = document.getElementById('loading');
     const results = document.getElementById('results');
     const error = document.getElementById('error');
+    const progress = document.getElementById('progress');
     
     if (loading) loading.classList.add('active');
     if (results) results.classList.add('hidden');
     if (error) error.classList.add('hidden');
-    showProgress();
+    if (progress) progress.classList.remove('hidden');
 }
 
 export function hideLoading() {
     const loading = document.getElementById('loading');
-    if (loading) {
-        loading.classList.remove('active');
-    }
-    hideProgress();
+    const progress = document.getElementById('progress');
+    
+    if (loading) loading.classList.remove('active');
+    if (progress) progress.classList.add('hidden');
 }
 
 export function showResults() {
