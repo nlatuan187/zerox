@@ -33,6 +33,10 @@ class litellmmodel(BaseModel):
         """
         super().__init__(model=model, **kwargs)
 
+        # Configure litellm with API keys
+        litellm.api_key = os.getenv("OPENAI_API_KEY")
+        litellm.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
         ## calling custom methods to validate the environment and model
         self.validate_environment()
         self.validate_model()
