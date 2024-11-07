@@ -112,8 +112,11 @@ async def analyze_contract(
 
             # First, validate if this is an insurance contract
             logger.info("Validating document type...")
-            client = Anthropic()
-            validation_response = client.messages.create(
+            client = Anthropic(
+                api_key=anthropic_key,
+                default_headers={"anthropic-version": "2023-06-01"}
+            )
+            validation_response = await client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=1000,
                 temperature=0,
@@ -165,7 +168,7 @@ async def analyze_contract(
                 "role": "user",
                 "content": "Hãy phân tích phần Quyền lợi của hợp đồng. Liệt kê tất cả quyền lợi bảo hiểm, chi tiết mức bảo hiểm, điều kiện áp dụng. Trích dẫn chính xác các điều khoản liên quan."
             })
-            response = client.messages.create(
+            response = await client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 temperature=0,
@@ -180,7 +183,7 @@ async def analyze_contract(
                 "role": "user",
                 "content": "Tiếp theo, hãy phân tích Chi phí tổng thể/hàng năm. Bao gồm phí bảo hiểm cơ bản, các loại phí khác, lịch đóng phí. Trích dẫn biểu phí cụ thể."
             })
-            response = client.messages.create(
+            response = await client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 temperature=0,
@@ -195,7 +198,7 @@ async def analyze_contract(
                 "role": "user",
                 "content": "Tiếp theo, hãy phân tích Giá trị hoàn lại. Giải thích cách tính, điều kiện áp dụng, và bảng tỷ lệ phí hủy hợp đồng theo năm."
             })
-            response = client.messages.create(
+            response = await client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 temperature=0,
@@ -210,7 +213,7 @@ async def analyze_contract(
                 "role": "user",
                 "content": "Tiếp theo, hãy phân tích các Điều khoản loại trừ. Liệt kê và giải thích chi tiết từng trường hợp loại trừ, điều kiện đặc biệt."
             })
-            response = client.messages.create(
+            response = await client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 temperature=0,
@@ -225,7 +228,7 @@ async def analyze_contract(
                 "role": "user",
                 "content": "Cuối cùng, hãy phân tích Quy trình claim. Mô tả các bước thực hiện, hồ sơ yêu cầu, thời hạn nộp hồ sơ."
             })
-            response = client.messages.create(
+            response = await client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 temperature=0,
