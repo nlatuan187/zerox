@@ -42,7 +42,8 @@ async def process_image_with_model(image_path: str) -> str:
             maintain_format=True,
             prior_page=""
         )
-        return completion if completion else ""
+        # Extract content from CompletionResponse
+        return completion.content if completion else ""
     except Exception as e:
         logger.error(f"Error processing image with model: {str(e)}")
         return ""
