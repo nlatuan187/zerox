@@ -6,12 +6,13 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Create and change to the app directory
 WORKDIR /app
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir hypercorn
 
 # Copy application code
 COPY . .
@@ -19,9 +20,5 @@ COPY . .
 # Default port (will be overridden by Railway)
 ENV PORT=8080
 
-# Create start script
-RUN echo '#!/bin/bash\nuvicorn app:app --host 0.0.0.0 --port "${PORT:-8080}"' > start.sh && \
-    chmod +x start.sh
-
-# Command to run the application
-CMD ["./start.sh"]
+# Run the web service on container startup using hypercorn
+CMD ["hypercorn", "app:app", "--bind", "::"]
