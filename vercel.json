@@ -15,8 +15,5 @@
             "src": "/(.*)",
             "dest": "app.py"
         }
-    ],
-    "env": {
-        "PYTHONPATH": ".:py_zerox"
-    }
+    ]
 }
