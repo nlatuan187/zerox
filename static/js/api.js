@@ -1,6 +1,4 @@
 export async function analyzeContract(formData) {
-    let eventSource = null;
-
     try {
         // Start analysis and get job ID
         const response = await fetch('/analyze', {
@@ -24,90 +22,72 @@ export async function analyzeContract(formData) {
         // Show initial progress
         showProgress();
         
-        // Connect to SSE stream with retry logic
-        return new Promise((resolve, reject) => {
-            let retryCount = 0;
-            const maxRetries = 5;
-            const retryDelay = 1000; // Start with 1 second
-            
-            function connectSSE() {
-                if (eventSource) {
-                    eventSource.close();
-                }
-
-                eventSource = new EventSource(`/stream/${job_id}`);
-                console.log('Connecting to SSE stream...');
-
-                eventSource.onopen = () => {
-                    console.log('SSE connection opened');
-                    retryCount = 0; // Reset retry count on successful connection
-                };
-
-                eventSource.onmessage = (event) => {
-                    try {
-                        const data = JSON.parse(event.data);
-                        console.log('Received SSE data:', data);
-                        
-                        updateProgress(data);
-                        
-                        if (data.partial_result) {
-                            showResults();
-                            updateResults(data.partial_result, true);
-                        }
-                        
-                        if (data.status === 'completed' && data.result) {
-                            console.log('Analysis completed');
-                            eventSource.close();
-                            hideProgress();
-                            resolve(data.result);
-                        } else if (data.status === 'error') {
-                            console.error('Analysis error:', data.error);
-                            eventSource.close();
-                            hideProgress();
-                            reject(new Error(data.error || 'Lỗi khi phân tích file'));
-                        }
-                    } catch (error) {
-                        console.error('Error processing SSE message:', error);
-                    }
-                };
-
-                eventSource.onerror = async (error) => {
-                    console.error('SSE connection error:', error);
-                    eventSource.close();
-                    
-                    if (retryCount < maxRetries) {
-                        retryCount++;
-                        const currentDelay = retryDelay * Math.pow(2, retryCount - 1); // Exponential backoff
-                        console.log(`Retrying connection in ${currentDelay}ms (${retryCount}/${maxRetries})...`);
-                        
-                        // Update UI to show retry status
-                        updateRetryStatus(retryCount, maxRetries);
-                        
-                        setTimeout(connectSSE, currentDelay);
-                    } else {
-                        console.error('Max retries reached');
-                        hideProgress();
-                        reject(new Error('Không thể kết nối với máy chủ sau nhiều lần thử lại'));
-                    }
-                };
-            }
-
-            // Start initial connection
-            connectSSE();
-
-            // Cleanup on page unload
-            window.addEventListener('beforeunload', () => {
-                if (eventSource) {
-                    console.log('Closing SSE connection on page unload');
-                    eventSource.close();
-                }
-            });
-        });
+        // Poll for status with exponential backoff
+        return await pollStatus(job_id);
     } catch (error) {
         console.error('API Error:', error);
         hideProgress();
         throw new Error(error.message || 'Lỗi khi phân tích file');
     }
+}
+
+async function pollStatus(jobId) {
+    const maxAttempts = 60; // 5 minutes total with increasing delays
+    let attempt = 0;
+    let delay = 1000; // Start with 1 second
+
+    while (attempt < maxAttempts) {
+        try {
+            console.log(`Polling attempt ${attempt + 1}/${maxAttempts}`);
+            const response = await fetch(`/status/${jobId}`);
+            
+            if (!response.ok) {
+                throw new Error('Failed to fetch status');
+            }
+
+            const data = await response.json();
+            console.log('Status data:', data);
+
+            // Update UI with current progress
+            updateProgress(data);
+
+            // Show partial results if available
+            if (data.partial_result) {
+                showResults();
+                updateResults(data.partial_result, true);
+            }
+
+            // Check status
+            if (data.status === 'completed' && data.result) {
+                console.log('Analysis completed');
+                hideProgress();
+                return data.result;
+            } else if (data.status === 'error') {
+                console.error('Analysis error:', data.error);
+                hideProgress();
+                throw new Error(data.error || 'Lỗi khi phân tích file');
+            }
+
+            // Calculate next delay with exponential backoff
+            delay = Math.min(delay * 1.5, 10000); // Cap at 10 seconds
+            console.log(`Waiting ${delay}ms before next poll`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            attempt++;
+        } catch (error) {
+            console.error('Polling error:', error);
+            // Only retry on network errors
+            if (error.message === 'Failed to fetch status') {
+                delay = Math.min(delay * 2, 10000);
+                console.log(`Retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                attempt++;
+            } else {
+                throw error;
+            }
+        }
+    }
+
+    throw new Error('Quá thời gian chờ phân tích. Vui lòng thử lại.');
 }
 
 function updateProgress(data) {
@@ -138,13 +118,6 @@ function updateProgress(data) {
         }
         
         progressText.textContent = statusText;
-    }
-}
-
-function updateRetryStatus(retryCount, maxRetries) {
-    const progressText = document.getElementById('progressText');
-    if (progressText) {
-        progressText.textContent = `Đang kết nối lại... (${retryCount}/${maxRetries})`;
     }
 }
 

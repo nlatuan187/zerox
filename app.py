@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse
 from anthropic import Anthropic
 from pyzerox import zerox
 from pyzerox.core.types import Page
@@ -16,7 +16,6 @@ from PIL import Image
 import io
 from fastapi.middleware.gzip import GZipMiddleware
 import uuid
-from sse_starlette.sse import EventSourceResponse
 import shutil
 
 # Configure logging
@@ -44,7 +43,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Store active analysis jobs
 active_jobs: Dict[str, Dict[str, Any]] = {}
 
-async def process_image_with_model(image_path: str, job_id: str) -> str:
+async def process_image_with_model(image_path: str) -> str:
     """Process a single image using litellmmodel directly"""
     try:
         model = litellmmodel(model="gpt-4o-mini")
@@ -200,7 +199,7 @@ async def process_files(job_id: str, file_content: bytes = None, file_name: str 
                         with open(file_path, "wb") as f:
                             f.write(img_content)
                         
-                        result = await process_image_with_model(file_path, job_id)
+                        result = await process_image_with_model(file_path)
                         if result:
                             contents.append(result)
                             logger.info(f"Successfully processed image {i}")
@@ -273,61 +272,13 @@ async def analyze_contract(
         logger.error(f"Error starting analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def status_event_generator(request: Request, job_id: str):
-    """Generate SSE events for job status"""
-    try:
-        while True:
-            if await request.is_disconnected():
-                break
-
-            if job_id not in active_jobs:
-                yield {
-                    "event": "error",
-                    "data": json.dumps({"error": "Job not found"})
-                }
-                break
-
-            job = active_jobs[job_id]
-            
-            # Include partial results if available
-            response_data = {
-                "status": job["status"],
-                "progress": job["progress"]
-            }
-            
-            if job["partial_result"]:
-                response_data["partial_result"] = job["partial_result"]
-            
-            if job["result"]:
-                response_data["result"] = job["result"]
-            
-            if job["error"]:
-                response_data["error"] = job["error"]
-
-            yield {
-                "event": "status",
-                "data": json.dumps(response_data)
-            }
-
-            if job["status"] in ["completed", "error"]:
-                if job["status"] == "completed":
-                    # Clean up job data after completion
-                    del active_jobs[job_id]
-                break
-
-            await asyncio.sleep(1)
-    except Exception as e:
-        logger.error(f"Error in status_event_generator: {str(e)}")
-        yield {
-            "event": "error",
-            "data": json.dumps({"error": str(e)})
-        }
-
-@app.get("/stream/{job_id}")
-async def stream_status(request: Request, job_id: str):
-    """Stream job status updates"""
-    event_generator = status_event_generator(request, job_id)
-    return EventSourceResponse(event_generator)
+@app.get("/status/{job_id}")
+async def get_job_status(job_id: str):
+    """Get job status"""
+    if job_id not in active_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return active_jobs[job_id]
 
 # Serve index.html at root
 @app.get("/")
