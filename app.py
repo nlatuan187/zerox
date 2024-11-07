@@ -17,6 +17,7 @@ import io
 from fastapi.middleware.gzip import GZipMiddleware
 import uuid
 import shutil
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -37,8 +38,12 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Get the directory containing app.py
+BASE_DIR = Path(__file__).resolve().parent
+
+# Mount static files with explicit directory
+STATIC_DIR = BASE_DIR / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Store active analysis jobs
 active_jobs: Dict[str, Dict[str, Any]] = {}
@@ -227,7 +232,14 @@ async def process_files(job_id: str, file_content: bytes = None, file_name: str 
             # Return streaming response
             return StreamingResponse(
                 analyze_content(contract_text, anthropic_key, job_id),
-                media_type="text/event-stream"
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Encoding": "none"
+                }
             )
 
         finally:
@@ -283,7 +295,11 @@ async def analyze_contract(
 # Serve index.html at root
 @app.get("/")
 async def read_root():
-    return FileResponse("static/index.html")
+    index_path = STATIC_DIR / "index.html"
+    if not index_path.exists():
+        logger.error(f"index.html not found at {index_path}")
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_path))
 
 # Health check endpoint for Vercel
 @app.get("/health")
