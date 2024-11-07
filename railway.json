@@ -4,7 +4,7 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "hypercorn app:app --bind ::",
+    "startCommand": "hypercorn app:app --bind 0.0.0.0:8000",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE",
