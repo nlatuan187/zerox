@@ -33,9 +33,18 @@ class litellmmodel(BaseModel):
         """
         super().__init__(model=model, **kwargs)
 
-        # Configure litellm with API keys
-        litellm.api_key = os.getenv("OPENAI_API_KEY")
-        litellm.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        # Configure litellm with model-specific settings
+        litellm.set_verbose = True
+        litellm.model_list = [
+            {
+                "model_name": "gpt-4o-mini",
+                "litellm_params": {
+                    "model": "gpt-4-vision-preview",
+                    "api_key": os.getenv("OPENAI_API_KEY"),
+                    "api_base": "https://api.openai.com/v1"
+                }
+            }
+        ]
 
         ## calling custom methods to validate the environment and model
         self.validate_environment()
@@ -59,10 +68,19 @@ class litellmmodel(BaseModel):
     ## custom method on top of BaseModel
     def validate_environment(self) -> None:
         """Validates the environment variables required for the model."""
-        env_config = litellm.validate_environment(model=self.model)
+        openai_key = os.getenv("OPENAI_API_KEY")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
 
-        if not env_config["keys_in_environment"]:
-            raise MissingEnvironmentVariables(extra_info=env_config)
+        if not openai_key or not anthropic_key:
+            raise MissingEnvironmentVariables(extra_info={
+                "keys_in_environment": False,
+                "missing_keys": [
+                    k for k, v in {
+                        "OPENAI_API_KEY": openai_key,
+                        "ANTHROPIC_API_KEY": anthropic_key
+                    }.items() if not v
+                ]
+            })
         
     def validate_model(self) -> None:
         '''Validates the model to ensure it is a vision model.'''
@@ -71,7 +89,7 @@ class litellmmodel(BaseModel):
         
     def validate_access(self) -> None:
         """Validates access to the model -> if environment variables are set correctly with correct values."""
-        if not litellm.check_valid_key(model=self.model,api_key=None):
+        if not litellm.check_valid_key(model=self.model,api_key=os.getenv("OPENAI_API_KEY")):
             raise ModelAccessError(extra_info={"model": self.model})
         
 
@@ -99,7 +117,12 @@ class litellmmodel(BaseModel):
         )
 
         try:
-            response = await litellm.acompletion(model=self.model, messages=messages, **self.kwargs)
+            response = await litellm.acompletion(
+                model=self.model,
+                messages=messages,
+                api_key=os.getenv("OPENAI_API_KEY"),
+                **self.kwargs
+            )
 
             ## completion response
             response = CompletionResponse(
