@@ -5,7 +5,11 @@ export async function analyzeContract(formData) {
 
         const response = await fetch('/analyze', {
             method: 'POST',
-            body: formData
+            body: formData,
+            headers: {
+                'Accept': 'text/event-stream',
+                'Cache-Control': 'no-cache'
+            }
         });
 
         if (!response.ok) {
