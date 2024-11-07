@@ -39,12 +39,6 @@
         "ANTHROPIC_API_KEY": "@anthropic_api_key",
         "OPENAI_API_KEY": "@openai_api_key"
     },
-    "functions": {
-        "app.py": {
-            "memory": 1024,
-            "maxDuration": 60
-        }
-    },
     "headers": [
         {
             "source": "/(.*)",
