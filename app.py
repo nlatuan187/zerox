@@ -11,12 +11,13 @@ import asyncio
 import tempfile
 import json
 import logging
-from typing import List
+from typing import List, Dict, Any
 from PIL import Image
 import io
 from fastapi.middleware.gzip import GZipMiddleware
 import uuid
 from sse_starlette.sse import EventSourceResponse
+import shutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +42,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Store active analysis jobs
-active_jobs = {}
+active_jobs: Dict[str, Dict[str, Any]] = {}
 
 async def process_image_with_model(image_path: str, job_id: str) -> str:
     """Process a single image using litellmmodel directly"""
@@ -52,7 +53,6 @@ async def process_image_with_model(image_path: str, job_id: str) -> str:
             maintain_format=True,
             prior_page=""
         )
-        # Extract content from CompletionResponse
         return completion.content if completion else ""
     except Exception as e:
         logger.error(f"Error processing image with model: {str(e)}")
@@ -133,6 +133,12 @@ async def analyze_content(contract_text: str, anthropic_key: str, job_id: str):
             analysis[section_key] = response.content[0].text.strip()
             messages.append({"role": "assistant", "content": response.content[0].text})
 
+            # Update partial results as they become available
+            active_jobs[job_id]["partial_result"] = {
+                "ocr_text": contract_text,
+                **analysis
+            }
+
         result = {
             "ocr_text": contract_text,
             **analysis
@@ -150,7 +156,7 @@ async def analyze_content(contract_text: str, anthropic_key: str, job_id: str):
         active_jobs[job_id]["error"] = str(e)
         raise
 
-async def process_files(job_id: str, file: UploadFile = None, images: List[UploadFile] = []):
+async def process_files(job_id: str, file_content: bytes = None, file_name: str = None, image_contents: List[tuple] = None):
     """Process files and update job status"""
     try:
         # Check API keys
@@ -163,35 +169,36 @@ async def process_files(job_id: str, file: UploadFile = None, images: List[Uploa
             raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not found in environment variables")
 
         # Create temp directory for files
-        with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = tempfile.mkdtemp()
+        try:
             contents = []
             
-            if file and file.filename.lower().endswith('.pdf'):
+            if file_content and file_name and file_name.lower().endswith('.pdf'):
                 active_jobs[job_id]["status"] = "processing_pdf"
                 active_jobs[job_id]["progress"] = 5
                 
                 # Process PDF file using zerox
-                file_path = os.path.join(temp_dir, file.filename)
-                content = await file.read()
+                file_path = os.path.join(temp_dir, file_name)
                 with open(file_path, "wb") as f:
-                    f.write(content)
+                    f.write(file_content)
+                
                 result = await zerox(file_path=file_path, model="gpt-4o-mini", cleanup=True)
                 if result and result.pages:
                     contents.extend([page.content for page in result.pages])
                 else:
                     raise HTTPException(status_code=400, detail="Không thể xử lý file PDF. Vui lòng kiểm tra lại file đầu vào.")
-            elif images:
+            
+            elif image_contents:
                 # Process all images
-                total_images = len(images)
-                for i, img in enumerate(images):
+                total_images = len(image_contents)
+                for i, (img_content, img_name) in enumerate(image_contents):
                     try:
                         active_jobs[job_id]["status"] = f"processing_image_{i+1}/{total_images}"
                         active_jobs[job_id]["progress"] = int((i / total_images) * 15)  # Progress up to 15%
                         
-                        file_path = os.path.join(temp_dir, f"page_{i}{os.path.splitext(img.filename)[1]}")
-                        content = await img.read()
+                        file_path = os.path.join(temp_dir, f"page_{i}{os.path.splitext(img_name)[1]}")
                         with open(file_path, "wb") as f:
-                            f.write(content)
+                            f.write(img_content)
                         
                         result = await process_image_with_model(file_path, job_id)
                         if result:
@@ -215,6 +222,10 @@ async def process_files(job_id: str, file: UploadFile = None, images: List[Uploa
             # Analyze content
             await analyze_content(contract_text, anthropic_key, job_id)
 
+        finally:
+            # Clean up temp directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     except Exception as e:
         logger.error(f"Error in process_files: {str(e)}")
         active_jobs[job_id]["status"] = "error"
@@ -227,54 +238,90 @@ async def analyze_contract(
     images: List[UploadFile] = File([])
 ):
     """Start analysis and return job ID"""
-    job_id = str(uuid.uuid4())
-    active_jobs[job_id] = {
-        "status": "starting",
-        "progress": 0,
-        "result": None,
-        "error": None
-    }
-    
-    # Start processing in background
-    asyncio.create_task(process_files(job_id, file, images))
-    
-    return {"job_id": job_id}
-
-@app.get("/status/{job_id}")
-async def job_status(job_id: str):
-    """Get job status"""
-    if job_id not in active_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = active_jobs[job_id]
-    return job
+    try:
+        job_id = str(uuid.uuid4())
+        active_jobs[job_id] = {
+            "status": "starting",
+            "progress": 0,
+            "result": None,
+            "partial_result": None,
+            "error": None
+        }
+        
+        # Read all files first
+        file_data = None
+        if file:
+            content = await file.read()
+            file_data = (content, file.filename)
+        
+        image_data = []
+        if images:
+            for img in images:
+                content = await img.read()
+                image_data.append((content, img.filename))
+        
+        # Start processing in background
+        asyncio.create_task(process_files(
+            job_id,
+            file_content=file_data[0] if file_data else None,
+            file_name=file_data[1] if file_data else None,
+            image_contents=image_data if image_data else None
+        ))
+        
+        return {"job_id": job_id}
+    except Exception as e:
+        logger.error(f"Error starting analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def status_event_generator(request: Request, job_id: str):
     """Generate SSE events for job status"""
-    while True:
-        if await request.is_disconnected():
-            break
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
 
-        if job_id not in active_jobs:
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": "Job not found"})
+            if job_id not in active_jobs:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": "Job not found"})
+                }
+                break
+
+            job = active_jobs[job_id]
+            
+            # Include partial results if available
+            response_data = {
+                "status": job["status"],
+                "progress": job["progress"]
             }
-            break
+            
+            if job["partial_result"]:
+                response_data["partial_result"] = job["partial_result"]
+            
+            if job["result"]:
+                response_data["result"] = job["result"]
+            
+            if job["error"]:
+                response_data["error"] = job["error"]
 
-        job = active_jobs[job_id]
+            yield {
+                "event": "status",
+                "data": json.dumps(response_data)
+            }
+
+            if job["status"] in ["completed", "error"]:
+                if job["status"] == "completed":
+                    # Clean up job data after completion
+                    del active_jobs[job_id]
+                break
+
+            await asyncio.sleep(1)
+    except Exception as e:
+        logger.error(f"Error in status_event_generator: {str(e)}")
         yield {
-            "event": "status",
-            "data": json.dumps(job)
+            "event": "error",
+            "data": json.dumps({"error": str(e)})
         }
-
-        if job["status"] in ["completed", "error"]:
-            if job["status"] == "completed":
-                # Clean up job data after completion
-                del active_jobs[job_id]
-            break
-
-        await asyncio.sleep(1)
 
 @app.get("/stream/{job_id}")
 async def stream_status(request: Request, job_id: str):

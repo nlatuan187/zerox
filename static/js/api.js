@@ -22,10 +22,17 @@ export async function analyzeContract(formData) {
         // Connect to SSE stream
         return new Promise((resolve, reject) => {
             const eventSource = new EventSource(`/stream/${job_id}`);
+            let retryCount = 0;
+            const maxRetries = 3;
             
             eventSource.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 updateProgress(data);
+                
+                // Show partial results if available
+                if (data.partial_result) {
+                    updateResults(data.partial_result, true);
+                }
                 
                 if (data.status === 'completed') {
                     eventSource.close();
@@ -36,10 +43,25 @@ export async function analyzeContract(formData) {
                 }
             };
             
-            eventSource.onerror = (error) => {
+            eventSource.onerror = async (error) => {
+                console.error('SSE Error:', error);
                 eventSource.close();
-                reject(new Error('Mất kết nối với máy chủ'));
+                
+                // Retry logic for connection errors
+                if (retryCount < maxRetries) {
+                    retryCount++;
+                    console.log(`Retrying connection (${retryCount}/${maxRetries})...`);
+                    await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                    eventSource = new EventSource(`/stream/${job_id}`);
+                } else {
+                    reject(new Error('Mất kết nối với máy chủ sau nhiều lần thử lại'));
+                }
             };
+
+            // Handle browser closing/navigating away
+            window.addEventListener('beforeunload', () => {
+                eventSource.close();
+            });
         });
     } catch (error) {
         console.error('API Error:', error);
@@ -50,13 +72,17 @@ export async function analyzeContract(formData) {
 function updateProgress(data) {
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
+    const progress = document.getElementById('progress');
+    
+    if (progress) progress.classList.remove('hidden');
     
     if (progressBar && progressText) {
         progressBar.style.width = `${data.progress}%`;
         
         let statusText = 'Đang xử lý...';
         if (data.status.startsWith('processing_image')) {
-            statusText = `Đang xử lý ảnh ${data.status.split('_')[2]}`;
+            const [_, current, total] = data.status.split('_')[2].split('/');
+            statusText = `Đang xử lý ảnh ${current}/${total}`;
         } else if (data.status === 'processing_pdf') {
             statusText = 'Đang xử lý PDF...';
         } else if (data.status === 'validating') {
@@ -125,7 +151,7 @@ export function showResults() {
     }
 }
 
-export function updateResults(data) {
+export function updateResults(data, isPartial = false) {
     try {
         const elements = {
             'benefits': data.quyền_lợi,
@@ -136,9 +162,15 @@ export function updateResults(data) {
         };
 
         for (const [id, content] of Object.entries(elements)) {
+            if (!content && isPartial) continue; // Skip empty sections for partial updates
+            
             const element = document.getElementById(id);
             if (element) {
-                element.innerHTML = content || 'Không tìm thấy thông tin';
+                element.innerHTML = content || 'Đang phân tích...';
+                
+                // Show results container when we start getting data
+                const results = document.getElementById('results');
+                if (results) results.classList.remove('hidden');
             } else {
                 console.warn(`Element with id '${id}' not found`);
             }
