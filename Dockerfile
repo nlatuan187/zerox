@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir hypercorn
 # Copy application code
 COPY . .
 
-# Default port (will be overridden by Railway)
-ENV PORT=8000
+# Create start script that uses Railway's PORT
+RUN echo '#!/bin/bash\nhypercorn app:app --bind "0.0.0.0:$PORT"' > start.sh && \
+    chmod +x start.sh
 
 # Run the web service on container startup
-CMD ["hypercorn", "app:app", "--bind", "0.0.0.0:8000"]
+CMD ["./start.sh"]
