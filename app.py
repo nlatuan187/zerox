@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from anthropic import Anthropic
 from pyzerox import zerox
 from pyzerox.core.types import Page
-from pyzerox.models import litellmmodel
+from pyzerox.models.modellitellm import litellmmodel
 import asyncio
 import tempfile
 import json
@@ -42,7 +42,7 @@ async def process_image_with_model(image_path: str) -> str:
             maintain_format=True,
             prior_page=""
         )
-        return completion.content if completion else ""
+        return completion if completion else ""
     except Exception as e:
         logger.error(f"Error processing image with model: {str(e)}")
         return ""
@@ -50,7 +50,7 @@ async def process_image_with_model(image_path: str) -> str:
 @app.post("/analyze")
 async def analyze_contract(
     file: UploadFile = File(None),
-    images: List[UploadFile] = File(None)
+    images: List[UploadFile] = File([])
 ):
     try:
         # Check API keys
@@ -77,31 +77,26 @@ async def analyze_contract(
                     contents.extend([page.content for page in result.pages])
                 else:
                     raise HTTPException(status_code=400, detail="Không thể xử lý file PDF. Vui lòng kiểm tra lại file đầu vào.")
-            elif file or images:
-                # Process image files directly with litellmmodel
-                files_to_process = [file] if file else images
-                if not any(files_to_process):
-                    raise HTTPException(status_code=400, detail="Vui lòng tải lên file PDF hoặc ảnh hợp đồng bảo hiểm")
-                
+            elif images:  # Changed condition to check images list
                 # Process all images
-                for i, img in enumerate(files_to_process):
-                    if img:
-                        try:
-                            # Save image with original extension
-                            file_path = os.path.join(temp_dir, f"page_{i}{os.path.splitext(img.filename)[1]}")
-                            content = await img.read()
-                            with open(file_path, "wb") as f:
-                                f.write(content)
-                            
-                            # Process image directly with model
-                            result = await process_image_with_model(file_path)
-                            if result:
-                                contents.append(result)
-                            else:
-                                logger.error(f"No results for image {i}")
-                        except Exception as e:
-                            logger.error(f"Error processing image {i}: {str(e)}")
-                            continue
+                for i, img in enumerate(images):
+                    try:
+                        # Save image with original extension
+                        file_path = os.path.join(temp_dir, f"page_{i}{os.path.splitext(img.filename)[1]}")
+                        content = await img.read()
+                        with open(file_path, "wb") as f:
+                            f.write(content)
+                        
+                        # Process image directly with model
+                        result = await process_image_with_model(file_path)
+                        if result:
+                            contents.append(result)
+                            logger.info(f"Successfully processed image {i}")
+                        else:
+                            logger.error(f"No results for image {i}")
+                    except Exception as e:
+                        logger.error(f"Error processing image {i}: {str(e)}")
+                        continue
             else:
                 raise HTTPException(status_code=400, detail="Vui lòng tải lên file PDF hoặc ảnh hợp đồng bảo hiểm")
 
@@ -142,11 +137,11 @@ async def analyze_contract(
                 return JSONResponse(content={
                     "ocr_text": contract_text,
                     "message": "Tài liệu không phải là hợp đồng bảo hiểm. Vui lòng tải lên hợp đồng bảo hiểm để phân tích.",
-                    "quyền_lợi": "Không có thông tin về hợp đồng bảo hiểm",
-                    "chi_phí_tổng_thể_hàng_năm": "Không có thông tin về hợp đồng bảo hiểm",
-                    "giá_trị_hoàn_lại": "Không có thông tin về hợp đồng bảo hiểm",
-                    "các_điều_khoản_loại_trừ": "Không có thông tin về hợp đồng bảo hiểm",
-                    "quy_trình_claim": "Không có thông tin về hợp đồng bảo hiểm"
+                    "quyền_lợi": "Không phải hợp đồng bảo hiểm",
+                    "chi_phí_tổng_thể_hàng_năm": "Không phải hợp đồng bảo hiểm",
+                    "giá_trị_hoàn_lại": "Không phải hợp đồng bảo hiểm",
+                    "các_điều_khoản_loại_trừ": "Không phải hợp đồng bảo hiểm",
+                    "quy_trình_claim": "Không phải hợp đồng bảo hiểm"
                 })
 
             # Initialize conversation
